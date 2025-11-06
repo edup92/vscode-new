@@ -35,11 +35,6 @@
             dest: /etc/apt/keyrings/docker.asc
             mode: "0644"
 
-        - name: Set permissions for Docker GPG key
-          file:
-            path: /etc/apt/keyrings/docker.asc
-            mode: "0644"
-
         - name: Add Docker repository to Apt sources
           copy:
             dest: /etc/apt/sources.list.d/docker.list
@@ -72,280 +67,156 @@
             groups: docker
             append: yes
             state: present
-          register: bitwarden_user
-        - name: Create bitwarden directories
+
+        - name: Create Code directories
           file:
             path: "{{ item.path }}"
             state: directory
-            owner: bitwarden
-            group: bitwarden
+            owner: code
+            group: code
             mode: "{{ item.mode }}"
           loop:
             - { path: "/opt/code-server", mode: "0700" }
             - { path: "/opt/code-server/docker", mode: "0755" }
             - { path: "/opt/code-server/ssl", mode: "0755" }
+            - { path: "/opt/code-server/workspace", mode: "0755" }
+            - { path: "/opt/code-server/config", mode: "0755" }
+            - { path: "/opt/code-server/env", mode: "0755" }
 
     - name: Generate self signed SSL
       block:
         - name: Generate self-signed SSL certificate
           command: >
             openssl req -x509 -nodes -days 365 -newkey rsa:2048
-            -keyout /opt/code-server/sslprivkey.pem
-            -out /opt/code-server/sslfullchain.pem
-            -subj "/C=ES/ST=Madrid/L=Madrid/O=Bitwarden/CN={{ domain }}"
+            -keyout /opt/code-server/ssl/privkey.pem
+            -out /opt/code-server/ssl/fullchain.pem
+            -subj "/C=ES/ST=Madrid/L=Madrid/O=Code/CN={{ domain }}"
           args:
-            creates: "/opt/code-server/sslfullchain.pem"
+            creates: "/opt/code-server/ssl/fullchain.pem"
+
         - name: Set SSL files permissions
           file:
             path: "{{ item }}"
-            owner: bitwarden
-            group: bitwarden
+            owner: code
+            group: code
             mode: "0600"
           loop:
-            - /opt/code-server/sslprivkey.pem
-            - /opt/code-server/sslfullchain.pem
+            - /opt/code-server/ssl/privkey.pem
+            - /opt/code-server/ssl/fullchain.pem
 
-    - name: Generar clave SSH github_pem si no existe
-      openssh_keypair:
-        path: "{{ playbook_dir }}/github_pem"
-        type: rsa
-        size: 4096
-        state: present
-      delegate_to: localhost
-      run_once: true
-
-    - name: Create bitwarden config files
+    - name: Github PEM
       block:
-        - name: Generate oauth proxy oauth_cookie_secret
+        - name: Create local github_pem directory
+          file:
+            path: "{{ playbook_dir }}/github_pem"
+            state: directory
+            mode: "0700"
+          delegate_to: localhost
+          run_once: true
+
+        - name: Generate PEM if not exists
+          openssh_keypair:
+            path: "{{ playbook_dir }}/github_pem/github_pem"
+            type: rsa
+            size: 4096
+            state: present
+          delegate_to: localhost
+          run_once: true
+
+        - name: Copy PEM to code-server config
+          copy:
+            src: "{{ playbook_dir }}/github_pem/github_pem"
+            dest: /opt/code-server/config/github_pem
+            owner: code
+            group: code
+            mode: "0600"
+
+    - name: Generate Code settings.json
+      copy:
+        dest: "/opt/code-server/config/vscode-settings.json"
+        content: |
+          {
+            "editor.tabSize": 2,
+            "editor.insertSpaces": true,
+            "editor.detectIndentation": false,
+            "editor.defaultFormatter": "esbenp.prettier-vscode",
+            "python.formatting.provider": "black",
+            "editor.formatOnSave": true,
+            "editor.minimap.enabled": false,
+            "workbench.colorTheme": "Tokyo Night",
+            "window.commandCenter": false,
+            "editor.lineNumbers": "on",
+            "editor.stickyScroll.enabled": false,
+            "files.autoSave": "onWindowChange",
+            "workbench.editorAssociations": {
+                "*.md": "vscode.markdown.preview.editor",
+                "*.MD": "vscode.markdown.preview.editor"
+            },
+            "workbench.sideBar.location": "left",
+            "workbench.statusBar.visible": true,
+            "workbench.tree.enableStickyScroll": true,
+            "workbench.view.alwaysShowHeaderActions": false,
+            "window.density.editorTabHeight": "default",
+            "git.autofetch": false,
+            "git.enableSmartCommit": true,
+            "git.postCommitCommand": "sync",
+            "ansible.python.interpreterPath": "/usr/bin/python3",
+            "ansible.validation.lint.enabled": true,
+            "extensions": [
+              "github.copilot",
+              "hashicorp.terraform",
+              "redhat.ansible",
+              "ms-python.python",
+              "enkia.tokyo-night",
+              "esbenp.prettier-vscode"
+            ]
+          }
+        owner: code
+        group: code
+        mode: "0644"
+
+    - name: Create docker config files
+      block:
+        - name: Generate oauth proxy cookie secret
           set_fact:
-            oauth_cookie_secret: "{{ lookup('pipe', 'openssl rand -base64 48 | tr -dc A-Za-z0-9 | head -c 32') }}"
+            oauth_cookie_secret: "{{ lookup('pipe', 'openssl rand -base64 32 | tr -dc A-Za-z0-9 | head -c 32') }}"
           no_log: true
+
         - name: Generate oauth proxy allowed accounts
           copy:
-            dest: /opt/bitwarden/bwdata/oauth2_proxy/allowed_emails.txt
+            dest: "/opt/code-server/docker/oauth_allowed_emails.txt"
             content: "{{ admin_email }}"
-            owner: bitwarden
-            group: bitwarden
+            owner: code
+            group: code
             mode: "0644"
-        - name: Generate Bitwarden mssql.env
+
+        - name: Create entrypoint.sh
           copy:
-            dest: "/opt/bitwarden/bwdata/env/mssql.env"
+            dest: /opt/code-server/docker/entrypoint.sh
+            owner: code
+            group: code
+            mode: "0755"
             content: |
-              ACCEPT_EULA=Y
-              MSSQL_PID=Express
-              SA_PASSWORD={{ bw_db_password }}
-              DATABASE=vault
-            owner: bitwarden
-            group: bitwarden
-            mode: "0600"
-        - name: Generate Bitwarden uid.env
+              #!/bin/sh
+              chmod 600 /home/coder/config/github_pem
+              mkdir -p /home/coder/.ssh
+              ln -sf /home/coder/config/github_pem /home/coder/.ssh/github_pem
+              echo "Host github.com\n  IdentityFile ~/.ssh/github_pem\n  StrictHostKeyChecking no" > /home/coder/.ssh/config
+
+              echo "Instalando extensiones VSCode..."
+              code-server --install-extension github.copilot
+              code-server --install-extension hashicorp.terraform
+              code-server --install-extension redhat.ansible
+              code-server --install-extension ms-python.python
+              code-server --install-extension enkia.tokyo-night
+              code-server --install-extension esbenp.prettier-vscode
+
+              echo "Iniciando code-server..."
+              exec code-server --bind-addr 0.0.0.0:8443 --auth none
+
+        - name: Generate OAuth Proxy env
           copy:
-            dest: "/opt/bitwarden/bwdata/env/uid.env"
-            content: |
-              LOCAL_UID={{ bitwarden_user.uid }}
-              LOCAL_GID={{ bitwarden_user.group }}
-            owner: bitwarden
-            group: bitwarden
-            mode: "0600"
-        - name: Generate bitwarden container bitwarden conf
-          copy:
-            dest: "/opt/bitwarden/bwdata/nginx/bitwarden.conf"
-            content: |
-              server {
-                listen 8080 default_server;
-                listen [::]:8080 default_server;
-                server_name {{ domain }};
-
-                return 301 https://{{ domain }}$request_uri;
-
-              }
-
-              server {
-                listen 8443 ssl http2;
-                listen [::]:8443 ssl http2;
-                server_name {{ domain }};
-
-                ssl_certificate /etc/ssl/certs/fullchain.pem;
-                ssl_certificate_key /etc/ssl/certs/privkey.pem;
-                ssl_trusted_certificate /etc/ssl/certs/fullchain.pem;
-                ssl_session_timeout 30m;
-                ssl_session_cache shared:SSL:20m;
-                ssl_session_tickets off;
-
-                ssl_protocols TLSv1.2;
-                ssl_ciphers "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256";
-                # Enables server-side protection from BEAST attacks
-                ssl_prefer_server_ciphers on;
-
-                # OCSP Stapling ---
-                # Fetch OCSP records from URL in ssl_certificate and cache them
-                ssl_stapling on;
-                ssl_stapling_verify on;
-
-                # Verify chain of trust of OCSP response using Root CA and Intermediate certs
-                resolver 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112 valid=300s;
-
-                include /etc/nginx/security-headers-ssl.conf;
-                include /etc/nginx/security-headers.conf;
-
-                location / {
-                  proxy_pass http://web:5000/;
-                  include /etc/nginx/security-headers-ssl.conf;
-                  include /etc/nginx/security-headers.conf;
-                  add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://haveibeenpwned.com; child-src 'self' https://*.duosecurity.com https://*.duofederal.com; frame-src 'self' https://*.duosecurity.com https://*.duofederal.com; connect-src 'self' wss://{{ domain }} https://api.pwnedpasswords.com https://api.2fa.directory; object-src 'self' blob:;";
-                  add_header X-Frame-Options SAMEORIGIN;
-                  add_header X-Robots-Tag "noindex, nofollow";
-                }
-
-                location /alive {
-                  return 200 'alive';
-                  add_header Content-Type text/plain;
-                }
-
-                location = /app-id.json {
-                  proxy_pass http://web:5000/app-id.json;
-                  include /etc/nginx/security-headers-ssl.conf;
-                  include /etc/nginx/security-headers.conf;
-                  proxy_hide_header Content-Type;
-                  add_header Content-Type $fido_content_type;
-                }
-
-                location = /duo-connector.html {
-                  proxy_pass http://web:5000/duo-connector.html;
-                }
-
-                location = /webauthn-connector.html {
-                  proxy_pass http://web:5000/webauthn-connector.html;
-                }
-
-                location = /webauthn-fallback-connector.html {
-                  proxy_pass http://web:5000/webauthn-fallback-connector.html;
-                }
-
-                location = /sso-connector.html {
-                  proxy_pass http://web:5000/sso-connector.html;
-                }
-
-                location /attachments/ {
-                  proxy_pass http://attachments:5000/;
-                }
-
-                location /api/ {
-                  proxy_pass http://api:5000/;
-                }
-
-                location /icons/ {
-                  proxy_pass http://icons:5000/;
-                }
-
-                location /notifications/ {
-                  proxy_pass http://notifications:5000/;
-                }
-
-                location /notifications/hub {
-                  proxy_pass http://notifications:5000/hub;
-                  proxy_set_header Upgrade $http_upgrade;
-                  proxy_set_header Connection $http_connection;
-                }
-
-                location /notifications/anonymous-hub {
-                  proxy_pass http://notifications:5000/anonymous-hub;
-                  proxy_set_header Upgrade $http_upgrade;
-                  proxy_set_header Connection $http_connection;
-                }
-
-                location /events/ {
-                  proxy_pass http://events:5000/;
-                }
-
-                location /sso {
-                  proxy_pass http://sso:5000;
-                  include /etc/nginx/security-headers-ssl.conf;
-                  include /etc/nginx/security-headers.conf;
-                  add_header X-Frame-Options SAMEORIGIN;
-                }
-
-                location /identity {
-                  proxy_pass http://identity:5000;
-                  include /etc/nginx/security-headers-ssl.conf;
-                  include /etc/nginx/security-headers.conf;
-                  add_header X-Frame-Options SAMEORIGIN;
-                }
-
-                location /admin {
-                  proxy_pass http://admin:5000;
-                  include /etc/nginx/security-headers-ssl.conf;
-                  include /etc/nginx/security-headers.conf;
-                  add_header X-Frame-Options SAMEORIGIN;
-                }
-
-              }
-            owner: bitwarden
-            group: bitwarden
-            mode: "0644"
-        - name: Generate nginx proxy conf
-          copy:
-            dest: "/opt/bitwarden/bwdata/nginx/proxy.conf"
-            content: |
-              server {
-                listen 80;
-                server_name {{ domain }};
-                return 301 https://$host$request_uri;
-              }
-
-              server {
-                listen 443 ssl;
-                server_name {{ domain }};
-
-                ssl_certificate /etc/ssl/certs/fullchain.pem;
-                ssl_certificate_key /etc/ssl/certs/privkey.pem;
-
-                location / {
-                  proxy_pass http://bitwarden-oauth2-proxy:4180;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                }
-
-                location /alive {
-                  proxy_pass https://bitwarden-nginx:8443/alive;
-                }
-
-                location /identity {
-                  proxy_pass https://bitwarden-nginx:8443/identity;
-                }
-
-                location /api {
-                  proxy_pass https://bitwarden-nginx:8443/api;
-                }
-
-              }
-            owner: root
-            group: root
-            mode: "0644"
-        - name: Generate Bitwarden global.env
-          copy:
-            dest: "/opt/bitwarden/bwdata/env/global.env"
-            content: |
-              ASPNETCORE_ENVIRONMENT=Production
-              globalSettings__selfHosted=true
-              globalSettings__baseServiceUri__vault=https://{{ domain }}
-              globalSettings__sqlServer__connectionString=Data Source=tcp:mssql,1433;Initial Catalog=vault;Persist Security Info=False;User ID=sa;Password={{ bw_db_password }};MultipleActiveResultSets=False;Connect Timeout=30;Encrypt=True;TrustServerCertificate=True
-              globalSettings__identityServer__certificatePath=/etc/bitwarden/identity/identity.pfx
-              globalSettings__identityServer__certificatePassword={{ pfx_password }}
-              globalSettings__installation__id={{ bw_installation_id }}
-              globalSettings__installation__key={{ bw_installation_key }}
-              globalSettings__mail__smtp__host={{ bw_smtp_host }}
-              globalSettings__mail__smtp__port={{ bw_smtp_port }}
-              globalSettings__mail__smtp__ssl={{ bw_smtp_ssl }}
-              globalSettings__mail__smtp__username={{ bw_smtp_username }}
-              globalSettings__mail__smtp__password={{ bw_smtp_password }}
-              globalSettings__enableUserRegistration=true
-            owner: bitwarden
-            group: bitwarden
-            mode: "0600"
-        - name: Generate Oauth Proxy env
-          copy:
-            dest: "/opt/bitwarden/bwdata/env/oauth-proxy.env"
+            dest: "/opt/code-server/env/oauth-proxy.env"
             content: |
               OAUTH2_PROXY_PROVIDER=google
               OAUTH2_PROXY_CLIENT_ID={{ oauth_client_id }}
@@ -353,244 +224,77 @@
               OAUTH2_PROXY_COOKIE_SECRET={{ oauth_cookie_secret }}
               OAUTH2_PROXY_REDIRECT_URL=https://{{ domain }}/oauth2/callback
               OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE=/etc/oauth2_proxy/allowed_emails.txt
-              OAUTH2_PROXY_UPSTREAMS=https://bitwarden-nginx:8443
               OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true
               OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4180
+              OAUTH2_PROXY_UPSTREAMS=http://code:8443
               OAUTH2_PROXY_COOKIE_SECURE=true
               OAUTH2_PROXY_SET_XAUTHREQUEST=true
               OAUTH2_PROXY_PASS_USER_HEADERS=true
               OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=true
-              #OAUTH2_PROXY_SKIP_AUTH_ROUTES=^/identity/,^/api/
-            owner: bitwarden
-            group: bitwarden
+            owner: code
+            group: code
             mode: "0600"
- 
-    - name: Docker configurations
-      block:
-        - name: Create bitwarden network
-          community.docker.docker_network:
-            name: bitwarden
-            driver: bridge
-            state: present
+
         - name: Generate docker-compose.yml
           copy:
-            dest: "/opt/bitwarden/bwdata/docker/docker-compose.yml"
-            content: |-
+            dest: "/opt/code-server/docker/docker-compose.yml"
+            content: |
+              version: "3.8"
               services:
-                mssql:
-                  image: ghcr.io/bitwarden/mssql:latest
-                  container_name: bitwarden-mssql
-                  restart: always
-                  stop_grace_period: 60s
+                code:
+                  image: ghcr.io/coder/code-server:latest
+                  container_name: code-server
+                  user: "1000:1000"
                   volumes:
-                    - ../mssql/data:/var/opt/mssql/data
-                    - ../logs/mssql:/var/opt/mssql/log
-                    - ../mssql/backups:/etc/bitwarden/mssql/backups
-                  env_file:
-                    - ../env/mssql.env
-                    - ../env/uid.env
-
-                web:
-                  image: ghcr.io/bitwarden/web:latest
-                  container_name: bitwarden-web
-                  restart: always
-                  volumes:
-                    - ../web:/etc/bitwarden/web
-                  env_file:
-                    - ../env/global.env
-                    - ../env/uid.env
-
-                attachments:
-                  image: ghcr.io/bitwarden/attachments:latest
-                  container_name: bitwarden-attachments
-                  restart: always
-                  volumes:
-                    - ../attachments:/etc/bitwarden/core/attachments
-                  env_file:
-                    - ../env/global.env
-                    - ../env/uid.env
-
-                api:
-                  image: ghcr.io/bitwarden/api:latest
-                  container_name: bitwarden-api
-                  restart: always
-                  volumes:
-                    - ../core:/etc/bitwarden/core
-                    - ../ca-certificates:/etc/bitwarden/ca-certificates
-                    - ../logs/api:/etc/bitwarden/logs
-                  env_file:
-                    - ../env/global.env
-                    - ../env/uid.env
-                  networks:
-                    - default
-
-                identity:
-                  image: ghcr.io/bitwarden/identity:latest
-                  container_name: bitwarden-identity
-                  restart: always
-                  volumes:
-                    - ../identity:/etc/bitwarden/identity
-                    - ../core:/etc/bitwarden/core
-                    - ../ca-certificates:/etc/bitwarden/ca-certificates
-                    - ../logs/identity:/etc/bitwarden/logs
-                  env_file:
-                    - ../env/global.env
-                    - ../env/uid.env
-                  networks:
-                    - default
-
-                sso:
-                  image: ghcr.io/bitwarden/sso:latest
-                  container_name: bitwarden-sso
-                  restart: always
-                  volumes:
-                    - ../identity:/etc/bitwarden/identity
-                    - ../core:/etc/bitwarden/core
-                    - ../ca-certificates:/etc/bitwarden/ca-certificates
-                    - ../logs/sso:/etc/bitwarden/logs
-                  env_file:
-                    - ../env/global.env
-                    - ../env/uid.env
-                  networks:
-                    - default
-
-                admin:
-                  image: ghcr.io/bitwarden/admin:latest
-                  container_name: bitwarden-admin
-                  restart: always
-                  depends_on:
-                    - mssql
-                  volumes:
-                    - ../core:/etc/bitwarden/core
-                    - ../ca-certificates:/etc/bitwarden/ca-certificates
-                    - ../logs/admin:/etc/bitwarden/logs
-                  env_file:
-                    - ../env/global.env
-                    - ../env/uid.env
-                  networks:
-                    - default
-
-                icons:
-                  image: ghcr.io/bitwarden/icons:latest
-                  container_name: bitwarden-icons
-                  restart: always
-                  volumes:
-                    - ../ca-certificates:/etc/bitwarden/ca-certificates
-                    - ../logs/icons:/etc/bitwarden/logs
-                  env_file:
-                    - ../env/global.env
-                    - ../env/uid.env
-                  networks:
-                    - default
-
-                notifications:
-                  image: ghcr.io/bitwarden/notifications:latest
-                  container_name: bitwarden-notifications
-                  restart: always
-                  volumes:
-                    - ../ca-certificates:/etc/bitwarden/ca-certificates
-                    - ../logs/notifications:/etc/bitwarden/logs
-                  env_file:
-                    - ../env/global.env
-                    - ../env/uid.env
-                  networks:
-                    - default
-
-                events:
-                  image: ghcr.io/bitwarden/events:latest
-                  container_name: bitwarden-events
-                  restart: always
-                  volumes:
-                    - ../ca-certificates:/etc/bitwarden/ca-certificates
-                    - ../logs/events:/etc/bitwarden/logs
-                  env_file:
-                    - ../env/global.env
-                    - ../env/uid.env
-                  networks:
-                    - default
-
-                nginx:
-                  image: ghcr.io/bitwarden/nginx:latest
-                  container_name: bitwarden-nginx
-                  restart: always
-                  depends_on:
-                    - web
-                    - admin
-                    - api
-                    - identity
+                    - ../workspace:/home/coder/workspace
+                    - ../config/vscode-settings.json:/home/coder/.local/share/code-server/User/settings.json
+                    - ../config/github_pem:/home/coder/config/github_pem
+                    - ./entrypoint.sh:/entrypoint.sh
+                  entrypoint: ["/entrypoint.sh"]
                   expose:
-                    - "8080"
                     - "8443"
-                  volumes:
-                    - ../nginx/bitwarden.conf:/etc/bitwarden/nginx/bitwarden.conf
-                    - ../ssl/fullchain.pem:/etc/ssl/certs/fullchain.pem
-                    - ../ssl/privkey.pem:/etc/ssl/certs/privkey.pem
-                    - ../logs/nginx:/var/log/nginx
-
-                  env_file:
-                    - ../env/uid.env
-                  networks:
-                    - default
-                    - bitwarden
 
                 oauth2-proxy:
                   image: quay.io/oauth2-proxy/oauth2-proxy:latest
-                  container_name: bitwarden-oauth2-proxy
+                  container_name: code-oauth2-proxy
                   restart: always
+                  ports:
+                    - "443:4180"
                   volumes:
-                    - /opt/bitwarden/bwdata/oauth2_proxy/allowed_emails.txt:/etc/oauth2_proxy/allowed_emails.txt:ro
+                    - ./oauth_allowed_emails.txt:/etc/oauth2_proxy/allowed_emails.txt:ro
+                    - ../ssl:/ssl
                   env_file:
                     - ../env/oauth-proxy.env
-                  networks:
-                    - bitwarden
                   depends_on:
-                    - nginx
-
-                nginx-proxy:
-                  image: nginx:latest
-                  container_name: bitwarden-nginx-proxy
-                  restart: always
-                  depends_on:
-                    - oauth2-proxy
-                  ports:
-                    - "443:443"
-                  volumes:
-                    - ../nginx/proxy.conf:/etc/nginx/conf.d/default.conf
-                    - ../ssl/fullchain.pem:/etc/ssl/certs/fullchain.pem
-                    - ../ssl/privkey.pem:/etc/ssl/certs/privkey.pem
-                  networks:
-                    - bitwarden
-
-              networks:
-                default:
-                  internal: true
-                bitwarden:
-                  external: true
-            owner: bitwarden
-            group: bitwarden
+                    - code
+            owner: code
+            group: code
             mode: "0644"
-        - name: Create systemd service for Bitwarden
+
+        - name: Create systemd service for Code
           copy:
-            dest: "/etc/systemd/system/bitwarden.service"
+            dest: "/etc/systemd/system/code-server.service"
             content: |
               [Unit]
-              Description=Bitwarden Docker Compose
+              Description=Code Docker Compose
               Requires=docker.service
               After=docker.service
 
               [Service]
               Type=oneshot
               RemainAfterExit=yes
-              ExecStart=/usr/bin/docker compose -f /opt/bitwarden/bwdata/docker/docker-compose.yml up -d
-              ExecStop=/usr/bin/docker compose -f /opt/bitwarden/bwdata/docker/docker-compose.yml down
+              WorkingDirectory=/opt/code-server/docker
+              ExecStart=/usr/bin/docker compose up -d
+              ExecStop=/usr/bin/docker compose down
               TimeoutStartSec=0
 
               [Install]
               WantedBy=multi-user.target
             mode: "0644"
-        - name: Enable and start Bitwarden service
+
+        - name: Enable and start Code service
           systemd:
-            name: bitwarden
+            name: code-server
             enabled: true
             state: restarted
             daemon_reload: true
