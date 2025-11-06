@@ -197,50 +197,57 @@
             group: code
             mode: "0644"
             content: |
-              FROM ghcr.io/coder/code-server:latest
+              FROM ubuntu:22.04
 
-              USER root
-              ENV DEBIAN_FRONTEND=noninteractive
-
-              # Reparar fuentes y añadir dependencias base
+              # 1. Dependencias base mínimas
               RUN apt-get update && \
                   apt-get install -y --no-install-recommends \
-                    apt-transport-https \
-                    ca-certificates \
                     curl \
+                    wget \
+                    git \
                     gnupg \
                     lsb-release \
-                    software-properties-common && \
-                  rm -rf /var/lib/apt/lists/*
-
-              # Instalar herramientas básicas
-              RUN apt-get update && \
-                  apt-get install -y --no-install-recommends \
-                    git \
+                    ca-certificates \
+                    software-properties-common \
                     openssh-client \
-                    python3 \
-                    python3-pip && \
+                    sudo && \
                   rm -rf /var/lib/apt/lists/*
 
-              # Node.js LTS
+              # 2. Python (sistema base)
+              RUN apt-get update && \
+                  apt-get install -y --no-install-recommends python3 python3-pip && \
+                  rm -rf /var/lib/apt/lists/*
+
+              # 2. Instalar Node.js (LTS)
               RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-                  apt-get install -y --no-install-recommends nodejs && \
+                  apt-get install -y nodejs && \
                   rm -rf /var/lib/apt/lists/*
 
-              # Terraform
+              # 3. Instalar Terraform
               RUN curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg && \
-                  echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(. /etc/os-release && echo $VERSION_CODENAME) main" > /etc/apt/sources.list.d/hashicorp.list && \
+                  echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" > /etc/apt/sources.list.d/hashicorp.list && \
                   apt-get update && \
-                  apt-get install -y --no-install-recommends terraform && \
+                  apt-get install -y terraform && \
                   rm -rf /var/lib/apt/lists/*
 
-              # Ansible
+              # 2. Ansible (sistema base)
               RUN add-apt-repository --yes --update ppa:ansible/ansible && \
-                  apt-get update && \
                   apt-get install -y --no-install-recommends ansible && \
                   rm -rf /var/lib/apt/lists/*
 
+              # 5. Instalar code-server (última versión estable)
+              RUN curl -fsSL https://code-server.dev/install.sh | bash
+
+              # 6. Crear usuario 'coder'
+              RUN useradd -m coder && \
+                  echo "coder ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-coder
+
               USER coder
+              WORKDIR /home/coder
+
+              # 7. Puerto y ejecución
+              EXPOSE 8443
+              ENTRYPOINT ["code-server", "--bind-addr", "0.0.0.0:8443", "--auth", "none"]
 
         - name: Create entrypoint.sh
           copy:
@@ -249,25 +256,46 @@
             group: code
             mode: "0755"
             content: |
-              #!/bin/sh
+              #!/bin/bash
+
+              # --- Configurar SSH para GitHub ---
               chmod 600 /home/coder/config/github_pem
               mkdir -p /home/coder/.ssh
               ln -sf /home/coder/config/github_pem /home/coder/.ssh/github_pem
-              echo "Host github.com\n  IdentityFile ~/.ssh/github_pem\n  StrictHostKeyChecking no" > /home/coder/.ssh/config
+              cat > /home/coder/.ssh/config <<'EOF'
+              Host github.com
+                IdentityFile ~/.ssh/github_pem
+                StrictHostKeyChecking no
+              EOF
 
-              echo "Configurando Git global..."
-              git config --global commit.template /workspaces/vscode/.devcontainer/.gitmessage.txt
+              # --- Configurar Git global ---
               git config --global user.name "code-server"
-              git config --global user.email "{{ admin_email }}"
+              git config --global user.email "code@localhost"
+              git config --global commit.template /workspaces/vscode/.devcontainer/.gitmessage.txt
 
+              # --- Instalar extensiones de VSCode ---
               echo "Instalando extensiones VSCode..."
-              code-server --install-extension github.copilot
-              code-server --install-extension hashicorp.terraform
-              code-server --install-extension redhat.ansible
-              code-server --install-extension ms-python.python
-              code-server --install-extension enkia.tokyo-night
-              code-server --install-extension esbenp.prettier-vscode
+              extensions=(
+                "github.copilot"
+                "hashicorp.terraform"
+                "redhat.ansible"
+                "ms-python.python"
+                "enkia.tokyo-night"
+                "esbenp.prettier-vscode"
+              )
+              for ext in "${extensions[@]}"; do
+                code-server --install-extension "$ext" >/dev/null 2>&1 || true
+              done
 
+              # --- Mostrar versiones clave ---
+              echo "Versiones instaladas:"
+              git --version
+              ansible --version | head -n 1
+              terraform --version | head -n 1
+              node --version
+              python3 --version
+
+              # --- Iniciar code-server ---
               echo "Iniciando code-server..."
               exec code-server --bind-addr 0.0.0.0:8443 --auth none
 
@@ -306,31 +334,29 @@
                     context: .
                     dockerfile: Dockerfile
                   container_name: code-server
-                  user: "1000:1000"
                   volumes:
                     - ../workspace:/home/coder/workspace
                     - ../config/vscode-settings.json:/home/coder/.local/share/code-server/User/settings.json
                     - ../config/github_pem:/home/coder/config/github_pem
                     - ./entrypoint.sh:/entrypoint.sh
                   entrypoint: ["/entrypoint.sh"]
-                  expose:
-                    - "8443"
-                  networks: [code-net]
+                  networks:
+                    - code-net
+                  restart: unless-stopped
 
                 oauth2-proxy:
                   image: quay.io/oauth2-proxy/oauth2-proxy:latest
                   container_name: code-oauth2-proxy
-                  restart: always
+                  restart: unless-stopped
                   ports:
-                    - "443:4180"
-                  networks: [code-net]
+                    - "443:4180" # único puerto público expuesto
+                  networks:
+                    - code-net
                   volumes:
                     - ./oauth_allowed_emails.txt:/etc/oauth2_proxy/allowed_emails.txt:ro
                     - ../ssl:/ssl
                   env_file:
                     - ../env/oauth-proxy.env
-                  depends_on:
-                    - code
             owner: code
             group: code
             mode: "0644"
