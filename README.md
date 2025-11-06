@@ -45,5 +45,5 @@ chmod +x gcloud-vscode-googlesso/runnme.sh ; gcloud-vscode-googlesso/runnme.sh
 
 ### View status
 ```bash
-sudo -u vscode bash -c 'cd /opt/vscode/bwdata/docker && docker compose ps'
+sudo -u vscode bash -c 'cd /opt/vscode/docker && docker compose ps'
 ```
