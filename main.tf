@@ -48,7 +48,7 @@ resource "google_compute_instance" "instance_vscode" {
   name         = local.instance_vscode_name
   project      = var.gcloud_project_id
   machine_type = "e2-small"
-  zone          = data.google_compute_zones.available.names[0]
+  zone          = data.google_compute_zones.available.names[1]
   metadata = {
     enable-osconfig = "TRUE"
     startup-script  = local_file.file_startup.content
