@@ -90,6 +90,23 @@ resource "google_compute_instance" "instance_vscode" {
   tags = [local.instance_vscode_name]
 }
 
+# Playbook
+
+resource "null_resource" "run_ansible" {
+  depends_on = [google_compute_instance.instance_vscode]
+  provisioner "local-exec" {
+    command = <<EOT
+      KEY_FILE="/tmp/ssh_key"
+      printf "%s" '${tls_private_key.keypair.private_key_pem}' > "$KEY_FILE"
+      chmod 600 "$KEY_FILE"
+      ansible-playbook -i ${google_compute_instance.instance_vscode.network_interface[0].access_config[0].nat_ip}, \
+      --user ubuntu \
+      --private-key "$KEY_FILE" \
+      playbook.yml
+    EOT
+  }
+}
+
 # Snapshot
 
 resource "google_compute_resource_policy" "snapshot_policy" {
