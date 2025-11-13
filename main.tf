@@ -29,21 +29,6 @@ resource "google_compute_project_metadata" "metadata_keypair" {
 
 # Instance
 
-resource "local_file" "file_startup" {
-  filename        = "${path.module}/tmp/startup.sh"
-  file_permission = "0755"
-  content = templatefile("${path.module}/startup.sh.tpl", {
-    project_name        = var.project_name
-    gcloud_project_id   = var.gcloud_project_id
-    gcloud_region       = var.gcloud_region
-    domain              = var.domain
-    admin_email         = var.admin_email
-    allowed_countries   = jsonencode(var.allowed_countries)
-    oauth_client_id     = var.oauth_client_id
-    oauth_client_secret = var.oauth_client_secret
-  })
-}
-
 resource "google_compute_instance" "instance_vscode" {
   name         = local.instance_vscode_name
   project      = var.gcloud_project_id
@@ -51,7 +36,6 @@ resource "google_compute_instance" "instance_vscode" {
   zone          = data.google_compute_zones.available.names[1]
   metadata = {
     enable-osconfig = "TRUE"
-    startup-script  = local_file.file_startup.content
   }
   boot_disk {
     auto_delete = false
