@@ -262,6 +262,8 @@
               ARG UID={{ code_user.uid }}
               ARG GID={{ code_user.group }}
               RUN groupmod -g $GID coder && usermod -u $UID -g $GID coder
+              RUN mkdir -p /home/coder/.local/share/code-server
+              RUN chown -R coder:coder /home/coder/.local
 
               USER coder
               WORKDIR /home/coder
