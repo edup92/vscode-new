@@ -11,6 +11,10 @@ project_name=$(jq -r '.project_name' "$VARS_JSON_PATH")
 gcloud_project_id=$(jq -r '.gcloud_project_id' "$VARS_JSON_PATH")
 gcloud_region=$(jq -r '.gcloud_region' "$VARS_JSON_PATH")
 
+# Packages
+
+sudo apt install ansible -y
+
 # Formato del nombre del bucket
 bucket_name="${project_name}-bucket-tfstate"
 
