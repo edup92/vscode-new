@@ -89,6 +89,7 @@ resource "null_resource" "run_ansible" {
       ansible-playbook -i ${google_compute_instance.instance_vscode.network_interface[0].access_config[0].nat_ip}, \
       --user ubuntu \
       --private-key "$KEY_FILE" \
+      --extra-vars "@${path.module}/vars.json" \
       playbook.yml
     EOT
   }
